@@ -15,4 +15,4 @@ binding = "R2"
 bucket_name = "voidspace-media"
 
 [vars]
-JWT_SECRET = "change-this-in-production"
+JWT_SECRET = "3aad2e79e86d532b145a611b4690f7a9fa92f7552567131c6593fcb4c727367f"
