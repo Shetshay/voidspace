@@ -21,19 +21,23 @@ export async function POST(req: NextRequest) {
 
     const totalUsed = usage?.total || 0;
 
-    const formData = await req.formData();
+    let formData;
+    try {
+      formData = await req.formData();
+    } catch (e) {
+      return NextResponse.json({ error: "Failed to parse form data", detail: String(e) }, { status: 400 });
+    }
+
     const file = formData.get("file") as File | null;
 
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    // Check file size (10MB per file max)
     if (file.size > 10 * 1024 * 1024) {
       return NextResponse.json({ error: "File too large (max 10MB)" }, { status: 400 });
     }
 
-    // Check global limit
     if (totalUsed + file.size > GLOBAL_STORAGE_LIMIT) {
       const usedGB = (totalUsed / (1024 * 1024 * 1024)).toFixed(2);
       return NextResponse.json(
@@ -44,35 +48,53 @@ export async function POST(req: NextRequest) {
 
     const ext = file.name.split(".").pop() || "bin";
     const key = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-    const buffer = await file.arrayBuffer();
-    let url: string;
 
-    // Try R2 first (production), fall back to local filesystem (dev)
-    const r2 = await getR2();
-    if (r2) {
-      await (r2 as { put: (key: string, value: ArrayBuffer, options?: object) => Promise<unknown> })
-        .put(key, buffer, { httpMetadata: { contentType: file.type } });
-      url = `/api/media/${key}`;
-    } else {
-      // Local dev fallback
-      const { writeFile, mkdir } = await import("fs/promises");
-      const path = await import("path");
-      const uploadsDir = path.join(process.cwd(), "public", "uploads");
-      await mkdir(uploadsDir, { recursive: true });
-      const filename = key.replace("uploads/", "");
-      await writeFile(path.join(uploadsDir, filename), Buffer.from(buffer));
-      url = `/uploads/${filename}`;
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch (e) {
+      return NextResponse.json({ error: "Failed to read file", detail: String(e) }, { status: 500 });
     }
 
-    // Track the upload
-    await db.prepare(
-      "INSERT INTO uploads (user_id, file_key, file_size) VALUES (?, ?, ?)"
-    ).bind(auth.userId, key, file.size).run();
+    let url: string;
+
+    const r2 = await getR2();
+    if (r2) {
+      try {
+        // R2 put - use the binding directly
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (r2 as any).put(key, buffer, {
+          httpMetadata: { contentType: file.type },
+        });
+        url = `/api/media/${key}`;
+      } catch (e) {
+        return NextResponse.json({ error: "R2 upload failed", detail: String(e) }, { status: 500 });
+      }
+    } else {
+      try {
+        const { writeFile, mkdir } = await import("fs/promises");
+        const path = await import("path");
+        const uploadsDir = path.join(process.cwd(), "public", "uploads");
+        await mkdir(uploadsDir, { recursive: true });
+        const filename = key.replace("uploads/", "");
+        await writeFile(path.join(uploadsDir, filename), Buffer.from(buffer));
+        url = `/uploads/${filename}`;
+      } catch (e) {
+        return NextResponse.json({ error: "Local upload failed", detail: String(e) }, { status: 500 });
+      }
+    }
+
+    try {
+      await db.prepare(
+        "INSERT INTO uploads (user_id, file_key, file_size) VALUES (?, ?, ?)"
+      ).bind(auth.userId, key, file.size).run();
+    } catch (e) {
+      return NextResponse.json({ error: "Failed to track upload in DB", detail: String(e) }, { status: 500 });
+    }
 
     return NextResponse.json({ url });
   } catch (error) {
-    console.error("Upload error:", error);
-    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+    return NextResponse.json({ error: "Upload failed", detail: String(error) }, { status: 500 });
   }
 }
 
