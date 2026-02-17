@@ -8,7 +8,7 @@ assets = { directory = ".open-next/assets", binding = "ASSETS" }
 [[d1_databases]]
 binding = "DB"
 database_name = "voidspace-db"
-database_id = "placeholder-create-via-wrangler"
+database_id = "29eb8bfd-7dd7-4802-985d-04d583236b26"
 
 [[r2_buckets]]
 binding = "R2"
