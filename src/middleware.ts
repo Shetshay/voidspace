@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 
+export const runtime = "experimental-edge";
+
 const PUBLIC_PATHS = ["/", "/login", "/register", "/about", "/faq", "/tos"];
 
 function getSecret(): Uint8Array {

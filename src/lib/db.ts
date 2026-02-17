@@ -1,9 +1,5 @@
 // Database helper — Cloudflare D1 in production, better-sqlite3 for local dev
 
-import path from "path";
-
-let localDb: LocalDB | null = null;
-
 export interface LocalDB {
   prepare(sql: string): {
     bind(...params: unknown[]): {
@@ -18,9 +14,13 @@ export interface LocalDB {
   exec(sql: string): void;
 }
 
+let localDb: LocalDB | null = null;
+
 function createLocalDB(): LocalDB {
+  // Dynamic require so the bundler doesn't try to include better-sqlite3 in production
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const Database = require("better-sqlite3");
+  const Database = require(/* webpackIgnore: true */ "better-sqlite3");
+  const path = require("path");
   const dbPath = path.join(process.cwd(), "local.db");
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
@@ -96,12 +96,22 @@ export async function initLocalDB() {
   if (initialized) return;
   initialized = true;
 
+  // In production on Cloudflare, D1 schema is applied via wrangler — skip init
+  try {
+    const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+    const { env } = await getCloudflareContext();
+    if (env?.DB) return; // D1 available, no local init needed
+  } catch {
+    // Not on Cloudflare, continue with local init
+  }
+
   const db = await getDB();
   try {
-    const fs = await import("fs");
+    const fs = require("fs");
+    const path = require("path");
     const schemaPath = path.join(process.cwd(), "db", "schema.sql");
     const schema = fs.readFileSync(schemaPath, "utf-8");
-    const statements = schema.split(";").filter((s) => s.trim());
+    const statements = schema.split(";").filter((s: string) => s.trim());
     for (const stmt of statements) {
       try {
         db.exec(stmt + ";");
@@ -110,6 +120,6 @@ export async function initLocalDB() {
       }
     }
   } catch {
-    // Schema file might not exist in production (D1 schema applied via wrangler)
+    // Schema file not available
   }
 }
