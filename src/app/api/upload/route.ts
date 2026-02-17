@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
-import { getDB, initLocalDB } from "@/lib/db";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
+import { getDB, getR2, initLocalDB } from "@/lib/db";
 
 const GLOBAL_STORAGE_LIMIT = 5 * 1024 * 1024 * 1024; // 5GB in bytes
 
@@ -44,19 +42,32 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Save to local filesystem (dev) — in production, swap to R2
-    const uploadsDir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(uploadsDir, { recursive: true });
     const ext = file.name.split(".").pop() || "bin";
-    const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-    const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFile(path.join(uploadsDir, filename), buffer);
-    const url = `/uploads/${filename}`;
+    const key = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    const buffer = await file.arrayBuffer();
+    let url: string;
+
+    // Try R2 first (production), fall back to local filesystem (dev)
+    const r2 = await getR2();
+    if (r2) {
+      await (r2 as { put: (key: string, value: ArrayBuffer, options?: object) => Promise<unknown> })
+        .put(key, buffer, { httpMetadata: { contentType: file.type } });
+      url = `/api/media/${key}`;
+    } else {
+      // Local dev fallback
+      const { writeFile, mkdir } = await import("fs/promises");
+      const path = await import("path");
+      const uploadsDir = path.join(process.cwd(), "public", "uploads");
+      await mkdir(uploadsDir, { recursive: true });
+      const filename = key.replace("uploads/", "");
+      await writeFile(path.join(uploadsDir, filename), Buffer.from(buffer));
+      url = `/uploads/${filename}`;
+    }
 
     // Track the upload
     await db.prepare(
       "INSERT INTO uploads (user_id, file_key, file_size) VALUES (?, ?, ?)"
-    ).bind(auth.userId, filename, file.size).run();
+    ).bind(auth.userId, key, file.size).run();
 
     return NextResponse.json({ url });
   } catch (error) {
